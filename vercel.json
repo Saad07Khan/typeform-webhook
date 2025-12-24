@@ -1,8 +1,5 @@
 {
-  "functions": {
-    "api/webhook.js": {
-      "memory": 1024,
-      "maxDuration": 10
-    }
-  }
+  "rewrites": [
+    { "source": "/api/webhook", "destination": "/api/webhook.js" }
+  ]
 }
