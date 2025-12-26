@@ -160,47 +160,128 @@ async function updateAirtable(formResponse, dbSubmissionId) {
     return;
   }
 
-  // Extract common fields with flexible matching
   const answers = formResponse.answers || [];
   
-  // Try multiple strategies to find name
-  const name = answers.find(a => 
-    a.field?.title?.toLowerCase().includes('name') ||
-    a.field?.ref?.toLowerCase().includes('name') ||
-    a.type === 'text'
-  )?.text || answers.find(a => a.text)?.text || 'N/A';
-
-  // Find email
-  const email = answers.find(a => 
-    a.type === 'email'
-  )?.email || answers.find(a => 
-    a.field?.title?.toLowerCase().includes('email')
-  )?.text || 'N/A';
-
-  // Build record with only fields that exist in Airtable
+  // Build base fields
   const fields = {
     'Submission ID': formResponse.token,
     'Submitted At': formResponse.submitted_at,
+    'Form Name': formResponse.definition?.title || 'Unknown',
+    'Status': 'New',
   };
-
-  // Add optional fields only if they're reasonable values
-  if (name && name !== 'N/A' && name.length < 200) {
-    fields['Name'] = name;
-  }
-  
-  if (email && email !== 'N/A' && email.includes('@')) {
-    fields['Email'] = email;
-  }
-
-  if (formResponse.definition?.title) {
-    fields['Form Name'] = formResponse.definition.title;
-  }
-
-  fields['Status'] = 'New';
   
   if (process.env.SUPABASE_URL) {
     fields['View Data'] = `${process.env.SUPABASE_URL}/project/default/editor`;
   }
+
+  // Map ALL answers to Airtable columns
+  // This maps each question to a specific column based on question text
+  answers.forEach((answer) => {
+    const questionTitle = (answer.field?.title || '').toLowerCase();
+    const answerValue = getAnswerText(answer);
+    
+    if (!answerValue || answerValue === 'N/A') return;
+
+    // Map questions to Airtable columns (truncate to 100k chars for Airtable limit)
+    const truncatedValue = answerValue.length > 100000 ? answerValue.substring(0, 100000) : answerValue;
+
+    // Map based on question text
+    if (questionTitle.includes('exploring this purchase')) {
+      fields['Purchase Duration'] = truncatedValue;
+    } else if (questionTitle.includes('full name')) {
+      fields['Full Name'] = truncatedValue;
+      fields['Name'] = truncatedValue; // Also set legacy Name field
+    } else if (questionTitle.includes('email')) {
+      fields['Email Address'] = truncatedValue;
+      fields['Email'] = truncatedValue; // Also set legacy Email field
+    } else if (questionTitle.includes('mobile number') || questionTitle.includes('whatsapp')) {
+      fields['Mobile Number'] = truncatedValue;
+    } else if (questionTitle.includes('where did you hear') || questionTitle.includes('hear about us')) {
+      fields['Referral Source'] = truncatedValue;
+    } else if (questionTitle.includes('age group')) {
+      fields['Age Group'] = truncatedValue;
+    } else if (questionTitle.includes('where do you currently live')) {
+      fields['Current Location'] = truncatedValue;
+    } else if (questionTitle.includes('current profession')) {
+      fields['Current Profession'] = truncatedValue;
+    } else if (questionTitle.includes('household income')) {
+      fields['Household Income'] = truncatedValue;
+    } else if (questionTitle.includes('household size')) {
+      fields['Household Size'] = truncatedValue;
+    } else if (questionTitle.includes('buying journey')) {
+      fields['Buying Journey Stage'] = truncatedValue;
+    } else if (questionTitle.includes('properties have you purchased')) {
+      fields['Properties Purchased Before'] = truncatedValue;
+    } else if (questionTitle.includes('prompting this property search')) {
+      fields['Purchase Prompt'] = truncatedValue;
+    } else if (questionTitle.includes('dream property') || questionTitle.includes('ideal investment')) {
+      fields['Dream Property Description'] = truncatedValue;
+    } else if (questionTitle.includes('tell us anything else')) {
+      fields['Additional Notes'] = truncatedValue;
+    } else if (questionTitle.includes('preferred location')) {
+      fields['Preferred Locations'] = truncatedValue;
+    } else if (questionTitle.includes('main intention behind this investment')) {
+      fields['Investment Intention'] = truncatedValue;
+    } else if (questionTitle.includes('vibe are you looking for')) {
+      fields['Preferred Vibe'] = truncatedValue;
+    } else if (questionTitle.includes('asset type')) {
+      fields['Asset Type'] = truncatedValue;
+    } else if (questionTitle.includes('budget range')) {
+      fields['Budget Range'] = truncatedValue;
+    } else if (questionTitle.includes('ownership structure')) {
+      fields['Ownership Structure'] = truncatedValue;
+    } else if (questionTitle.includes('possession timeline')) {
+      fields['Possession Timeline'] = truncatedValue;
+    } else if (questionTitle.includes('close the deal')) {
+      fields['Deal Closure Timeline'] = truncatedValue;
+    } else if (questionTitle.includes('management model')) {
+      fields['Management Model'] = truncatedValue;
+    } else if (questionTitle.includes('funding preference')) {
+      fields['Funding Preference'] = truncatedValue;
+    } else if (questionTitle.includes('inspires this investment')) {
+      fields['Investment Inspiration'] = truncatedValue;
+    } else if (questionTitle.includes('tell us more') && questionTitle.includes('investment')) {
+      fields['Investment Details'] = truncatedValue;
+    } else if (questionTitle.includes('matters most') && questionTitle.includes('location')) {
+      fields['Location Priorities'] = truncatedValue;
+    } else if (questionTitle.includes('climate do you')) {
+      fields['Preferred Climate'] = truncatedValue;
+    } else if (questionTitle.includes('type of area')) {
+      fields['Area Type Preference'] = truncatedValue;
+    } else if (questionTitle.includes('too far')) {
+      fields['Distance Tolerance'] = truncatedValue;
+    } else if (questionTitle.includes('tell us more') && questionTitle.includes('location')) {
+      fields['Location Details'] = truncatedValue;
+    } else if (questionTitle.includes('community setup')) {
+      fields['Community Setup'] = truncatedValue;
+    } else if (questionTitle.includes('community be friendly')) {
+      fields['Community Friendly For'] = truncatedValue;
+    } else if (questionTitle.includes('natural features')) {
+      fields['Natural Features'] = truncatedValue;
+    } else if (questionTitle.includes('terrain')) {
+      fields['Terrain Preference'] = truncatedValue;
+    } else if (questionTitle.includes('preferred views')) {
+      fields['Preferred Views'] = truncatedValue;
+    } else if (questionTitle.includes('outdoor amenities')) {
+      fields['Outdoor Amenities'] = truncatedValue;
+    } else if (questionTitle.includes('tell us more') && questionTitle.includes('amenities')) {
+      fields['Amenities Details'] = truncatedValue;
+    } else if (questionTitle.includes('unit configuration')) {
+      fields['Unit Configuration'] = truncatedValue;
+    } else if (questionTitle.includes('facing direction') || questionTitle.includes('vastu')) {
+      fields['House Facing Direction'] = truncatedValue;
+    } else if (questionTitle.includes('furnishing level')) {
+      fields['Furnishing Level'] = truncatedValue;
+    } else if (questionTitle.includes('interior style')) {
+      fields['Interior Style'] = truncatedValue;
+    } else if (questionTitle.includes('smart home')) {
+      fields['Smart Home Preferences'] = truncatedValue;
+    } else if (questionTitle.includes('must-have features')) {
+      fields['Must Have Features'] = truncatedValue;
+    } else if (questionTitle.includes('tell us more') && questionTitle.includes('home')) {
+      fields['Home Details'] = truncatedValue;
+    }
+  });
 
   const record = { fields };
 
