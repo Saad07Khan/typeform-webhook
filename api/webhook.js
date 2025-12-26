@@ -211,6 +211,15 @@ async function updateAirtable(formResponse, dbSubmissionId) {
   const unmappedFields = [];
   let mappedCount = 0;
 
+  // Track which "optional" detail fields we've seen (in order)
+  const optionalDetailFields = [
+    'Investment Details',
+    'Location Details', 
+    'Amenities Details',
+    'Home Details'
+  ];
+  let optionalFieldIndex = 0;
+
   // Map ALL answers to Airtable columns with improved logic
   answers.forEach((answer) => {
     // Get the actual question title from definition
@@ -309,10 +318,7 @@ async function updateAirtable(formResponse, dbSubmissionId) {
       fields['Investment Inspiration'] = truncatedValue;
       mapped = true;
     }
-    else if (matchesAny('tell us more') && matchesAny('investment')) {
-      fields['Investment Details'] = truncatedValue;
-      mapped = true;
-    }
+    // Note: Generic "optional" detail fields are handled at the end
 
     // === PROPERTY SPECIFICATIONS ===
     else if (matchesAny('vibe are you looking', 'atmosphere', 'what vibe', 'preferred vibe')) {
@@ -365,10 +371,7 @@ async function updateAirtable(formResponse, dbSubmissionId) {
       fields['Distance Tolerance'] = truncatedValue;
       mapped = true;
     }
-    else if (matchesAny('tell us more') && matchesAny('location')) {
-      fields['Location Details'] = truncatedValue;
-      mapped = true;
-    }
+    // Note: Generic "optional" detail fields are handled at the end
 
     // === COMMUNITY & ENVIRONMENT ===
     else if (matchesAny('community setup', 'type of community', 'community type')) {
@@ -395,10 +398,7 @@ async function updateAirtable(formResponse, dbSubmissionId) {
       fields['Outdoor Amenities'] = truncatedValue;
       mapped = true;
     }
-    else if (matchesAny('tell us more') && matchesAny('amenities')) {
-      fields['Amenities Details'] = truncatedValue;
-      mapped = true;
-    }
+    // Note: Generic "optional" detail fields are handled at the end
 
     // === HOME SPECIFICATIONS ===
     else if (matchesAny('unit configuration', 'bedrooms', 'bhk', 'rooms', 'configuration')) {
@@ -425,11 +425,6 @@ async function updateAirtable(formResponse, dbSubmissionId) {
       fields['Must Have Features'] = truncatedValue;
       mapped = true;
     }
-    else if (matchesAny('tell us more') && matchesAny('home')) {
-      fields['Home Details'] = truncatedValue;
-      mapped = true;
-    }
-
     // === REFERRAL & ADDITIONAL ===
     else if (matchesAny('where did you hear', 'hear about us', 'how did you find', 'referral')) {
       fields['Referral Source'] = truncatedValue;
@@ -438,6 +433,19 @@ async function updateAirtable(formResponse, dbSubmissionId) {
     else if (matchesAny('tell us anything else', 'additional', 'anything else', 'comments')) {
       fields['Additional Notes'] = truncatedValue;
       mapped = true;
+    }
+
+    // === CATCH-ALL FOR GENERIC "OPTIONAL" DETAIL FIELDS ===
+    // Handle "If you want to tell us more, add details here (optional)" type questions
+    if (!mapped && matchesAny('optional', 'add details here', 'if you want', 'want to tell us more')) {
+      // Map to next available optional detail field in sequence
+      if (optionalFieldIndex < optionalDetailFields.length) {
+        const fieldName = optionalDetailFields[optionalFieldIndex];
+        fields[fieldName] = truncatedValue;
+        mapped = true;
+        optionalFieldIndex++;
+        console.log(`🔷 Mapped generic optional field → ${fieldName}`);
+      }
     }
 
     // Track unmapped fields
