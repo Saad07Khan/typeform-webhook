@@ -23,28 +23,27 @@ export default async function handler(req, res) {
     }
 
     const payload = req.body;
-    
+
     // Check payload size (Vercel limit is 4.5MB on Hobby tier)
     const payloadSize = JSON.stringify(payload).length;
-    if (payloadSize > 4 * 1024 * 1024) { // 4MB safety margin
+    if (payloadSize > 4 * 1024 * 1024) {
       console.error(`Payload too large: ${payloadSize} bytes`);
       return res.status(413).json({ error: 'Payload too large' });
     }
-    
+
     // Validate payload structure
     if (!payload || !payload.form_response) {
       console.error('Invalid payload structure:', payload);
       return res.status(400).json({ error: 'Invalid payload structure' });
     }
-    
+
     // Extract form data
     const formResponse = payload.form_response;
-    
     if (!formResponse.token || !formResponse.form_id) {
       console.error('Missing required fields:', formResponse);
       return res.status(400).json({ error: 'Missing required fields' });
     }
-    
+
     const submissionId = formResponse.token;
     const formId = formResponse.form_id;
     const submittedAt = formResponse.submitted_at || new Date().toISOString();
@@ -58,9 +57,9 @@ export default async function handler(req, res) {
     } catch (supabaseError) {
       console.error('Supabase save failed:', supabaseError);
       // Return 500 so Typeform retries
-      return res.status(500).json({ 
+      return res.status(500).json({
         error: 'Database save failed',
-        message: supabaseError.message 
+        message: supabaseError.message
       });
     }
 
@@ -72,16 +71,16 @@ export default async function handler(req, res) {
       // Don't fail the webhook - Airtable is nice-to-have
     }
 
-    return res.status(200).json({ 
-      success: true, 
-      submission_id: submissionId 
+    return res.status(200).json({
+      success: true,
+      submission_id: submissionId
     });
 
   } catch (error) {
     console.error('Error processing webhook:', error);
-    return res.status(500).json({ 
+    return res.status(500).json({
       error: 'Internal server error',
-      message: error.message 
+      message: error.message
     });
   }
 }
@@ -121,7 +120,7 @@ async function saveToSupabase(formResponse) {
       .map(answer => ({
         submission_id: submission.id,
         question_id: answer.field.id,
-        question_text: answer.field.title || answer.field.ref || 'Unknown',
+        question_text: answer.field.ref || answer.field.title || 'Unknown',
         answer_text: getAnswerText(answer),
         answer_type: answer.type,
       }));
@@ -142,7 +141,7 @@ async function saveToSupabase(formResponse) {
   return submission.id;
 }
 
-// Update Airtable
+// Update Airtable with improved mapping and logging
 async function updateAirtable(formResponse, dbSubmissionId) {
   // Check if record already exists in Airtable
   const searchUrl = `https://api.airtable.com/v0/${process.env.AIRTABLE_BASE_ID}/${process.env.AIRTABLE_TABLE_ID}?filterByFormula={Submission ID}="${formResponse.token}"`;
@@ -161,7 +160,21 @@ async function updateAirtable(formResponse, dbSubmissionId) {
   }
 
   const answers = formResponse.answers || [];
-  
+
+  // === DEBUG LOGGING ===
+  console.log('=== TYPEFORM PAYLOAD DEBUG ===');
+  console.log(`Total answers received: ${answers.length}`);
+  answers.forEach((answer, idx) => {
+    console.log(`Answer ${idx}:`, {
+      type: answer.type,
+      fieldId: answer.field?.id,
+      fieldTitle: answer.field?.title,
+      fieldRef: answer.field?.ref,
+      hasValue: !!getAnswerText(answer),
+      answerPreview: getAnswerText(answer)?.substring(0, 50)
+    });
+  });
+
   // Build base fields
   const fields = {
     'Submission ID': formResponse.token,
@@ -169,120 +182,278 @@ async function updateAirtable(formResponse, dbSubmissionId) {
     'Form Name': formResponse.definition?.title || 'Unknown',
     'Status': 'New',
   };
-  
+
   if (process.env.SUPABASE_URL) {
     fields['View Data'] = `${process.env.SUPABASE_URL}/project/default/editor`;
   }
 
-  // Map ALL answers to Airtable columns
-  // This maps each question to a specific column based on question text
+  // Track unmapped fields for logging
+  const unmappedFields = [];
+  let mappedCount = 0;
+
+  // Map ALL answers to Airtable columns with improved logic
   answers.forEach((answer) => {
-    const questionTitle = (answer.field?.title || '').toLowerCase();
+    // Try both title and ref for matching
+    const questionTitle = (answer.field?.title || '').toLowerCase().trim();
+    const questionRef = (answer.field?.ref || '').toLowerCase().trim();
     const answerValue = getAnswerText(answer);
-    
-    if (!answerValue || answerValue === 'N/A') return;
 
-    // Map questions to Airtable columns (truncate to 100k chars for Airtable limit)
-    const truncatedValue = answerValue.length > 100000 ? answerValue.substring(0, 100000) : answerValue;
+    // Skip if no answer value
+    if (!answerValue || answerValue === 'N/A' || answerValue === '') {
+      console.log(`⚠️  Skipping empty answer for: ${answer.field?.title || answer.field?.ref}`);
+      return;
+    }
 
-    // Map based on question text
-    if (questionTitle.includes('exploring this purchase')) {
-      fields['Purchase Duration'] = truncatedValue;
-    } else if (questionTitle.includes('full name')) {
+    // Truncate to Airtable's 100k character limit
+    const truncatedValue = answerValue.length > 100000 
+      ? answerValue.substring(0, 100000) 
+      : answerValue;
+
+    // Use a helper function to check if question matches any keywords
+    const matchesAny = (...keywords) => {
+      return keywords.some(keyword => 
+        questionTitle.includes(keyword.toLowerCase()) || 
+        questionRef.includes(keyword.toLowerCase())
+      );
+    };
+
+    let mapped = false;
+
+    // === CONTACT INFORMATION ===
+    if (matchesAny('full name', 'your name', 'name')) {
       fields['Full Name'] = truncatedValue;
-      fields['Name'] = truncatedValue; // Also set legacy Name field
-    } else if (questionTitle.includes('email')) {
+      fields['Name'] = truncatedValue; // Legacy field
+      mapped = true;
+    } 
+    else if (matchesAny('email', 'e-mail', 'email address')) {
       fields['Email Address'] = truncatedValue;
-      fields['Email'] = truncatedValue; // Also set legacy Email field
-    } else if (questionTitle.includes('mobile number') || questionTitle.includes('whatsapp')) {
+      fields['Email'] = truncatedValue; // Legacy field
+      mapped = true;
+    } 
+    else if (matchesAny('mobile', 'phone', 'whatsapp', 'contact number')) {
       fields['Mobile Number'] = truncatedValue;
-    } else if (questionTitle.includes('where did you hear') || questionTitle.includes('hear about us')) {
-      fields['Referral Source'] = truncatedValue;
-    } else if (questionTitle.includes('age group')) {
+      mapped = true;
+    }
+
+    // === DEMOGRAPHIC INFO ===
+    else if (matchesAny('age group', 'age range', 'how old')) {
       fields['Age Group'] = truncatedValue;
-    } else if (questionTitle.includes('where do you currently live')) {
+      mapped = true;
+    }
+    else if (matchesAny('where do you currently live', 'current location', 'living in')) {
       fields['Current Location'] = truncatedValue;
-    } else if (questionTitle.includes('current profession')) {
+      mapped = true;
+    }
+    else if (matchesAny('current profession', 'occupation', 'what do you do')) {
       fields['Current Profession'] = truncatedValue;
-    } else if (questionTitle.includes('household income')) {
+      mapped = true;
+    }
+    else if (matchesAny('household income', 'annual income', 'family income')) {
       fields['Household Income'] = truncatedValue;
-    } else if (questionTitle.includes('household size')) {
+      mapped = true;
+    }
+    else if (matchesAny('household size', 'family size', 'how many people')) {
       fields['Household Size'] = truncatedValue;
-    } else if (questionTitle.includes('buying journey')) {
+      mapped = true;
+    }
+
+    // === PURCHASE/INVESTMENT INFO ===
+    else if (matchesAny('exploring this purchase', 'how long', 'timeline')) {
+      fields['Purchase Duration'] = truncatedValue;
+      mapped = true;
+    }
+    else if (matchesAny('buying journey', 'purchase stage', 'where are you')) {
       fields['Buying Journey Stage'] = truncatedValue;
-    } else if (questionTitle.includes('properties have you purchased')) {
+      mapped = true;
+    }
+    else if (matchesAny('properties have you purchased', 'bought before', 'previous purchases')) {
       fields['Properties Purchased Before'] = truncatedValue;
-    } else if (questionTitle.includes('prompting this property search')) {
+      mapped = true;
+    }
+    else if (matchesAny('prompting this property search', 'why now', 'what prompted')) {
       fields['Purchase Prompt'] = truncatedValue;
-    } else if (questionTitle.includes('dream property') || questionTitle.includes('ideal investment')) {
+      mapped = true;
+    }
+    else if (matchesAny('dream property', 'ideal investment', 'perfect property')) {
       fields['Dream Property Description'] = truncatedValue;
-    } else if (questionTitle.includes('tell us anything else')) {
-      fields['Additional Notes'] = truncatedValue;
-    } else if (questionTitle.includes('preferred location')) {
+      mapped = true;
+    }
+    else if (matchesAny('preferred location', 'where would you like', 'location preference')) {
       fields['Preferred Locations'] = truncatedValue;
-    } else if (questionTitle.includes('main intention behind this investment')) {
+      mapped = true;
+    }
+    else if (matchesAny('main intention behind this investment', 'investment goal', 'why invest')) {
       fields['Investment Intention'] = truncatedValue;
-    } else if (questionTitle.includes('vibe are you looking for')) {
-      fields['Preferred Vibe'] = truncatedValue;
-    } else if (questionTitle.includes('asset type')) {
-      fields['Asset Type'] = truncatedValue;
-    } else if (questionTitle.includes('budget range')) {
-      fields['Budget Range'] = truncatedValue;
-    } else if (questionTitle.includes('ownership structure')) {
-      fields['Ownership Structure'] = truncatedValue;
-    } else if (questionTitle.includes('possession timeline')) {
-      fields['Possession Timeline'] = truncatedValue;
-    } else if (questionTitle.includes('close the deal')) {
-      fields['Deal Closure Timeline'] = truncatedValue;
-    } else if (questionTitle.includes('management model')) {
-      fields['Management Model'] = truncatedValue;
-    } else if (questionTitle.includes('funding preference')) {
-      fields['Funding Preference'] = truncatedValue;
-    } else if (questionTitle.includes('inspires this investment')) {
+      mapped = true;
+    }
+    else if (matchesAny('inspires this investment', 'what inspires', 'motivation')) {
       fields['Investment Inspiration'] = truncatedValue;
-    } else if (questionTitle.includes('tell us more') && questionTitle.includes('investment')) {
+      mapped = true;
+    }
+    else if (matchesAny('tell us more') && matchesAny('investment')) {
       fields['Investment Details'] = truncatedValue;
-    } else if (questionTitle.includes('matters most') && questionTitle.includes('location')) {
+      mapped = true;
+    }
+
+    // === PROPERTY SPECIFICATIONS ===
+    else if (matchesAny('vibe are you looking', 'atmosphere', 'what vibe')) {
+      fields['Preferred Vibe'] = truncatedValue;
+      mapped = true;
+    }
+    else if (matchesAny('asset type', 'property type', 'type of property')) {
+      fields['Asset Type'] = truncatedValue;
+      mapped = true;
+    }
+    else if (matchesAny('budget range', 'price range', 'how much')) {
+      fields['Budget Range'] = truncatedValue;
+      mapped = true;
+    }
+    else if (matchesAny('ownership structure', 'how own', 'ownership type')) {
+      fields['Ownership Structure'] = truncatedValue;
+      mapped = true;
+    }
+    else if (matchesAny('possession timeline', 'when move in', 'possession date')) {
+      fields['Possession Timeline'] = truncatedValue;
+      mapped = true;
+    }
+    else if (matchesAny('close the deal', 'purchase timeline', 'when buy')) {
+      fields['Deal Closure Timeline'] = truncatedValue;
+      mapped = true;
+    }
+    else if (matchesAny('management model', 'property management', 'manage property')) {
+      fields['Management Model'] = truncatedValue;
+      mapped = true;
+    }
+    else if (matchesAny('funding preference', 'payment', 'financing')) {
+      fields['Funding Preference'] = truncatedValue;
+      mapped = true;
+    }
+
+    // === LOCATION PREFERENCES ===
+    else if (matchesAny('matters most') && matchesAny('location')) {
       fields['Location Priorities'] = truncatedValue;
-    } else if (questionTitle.includes('climate do you')) {
+      mapped = true;
+    }
+    else if (matchesAny('climate do you', 'weather preference', 'climate preference')) {
       fields['Preferred Climate'] = truncatedValue;
-    } else if (questionTitle.includes('type of area')) {
+      mapped = true;
+    }
+    else if (matchesAny('type of area', 'urban', 'rural', 'area preference')) {
       fields['Area Type Preference'] = truncatedValue;
-    } else if (questionTitle.includes('too far')) {
+      mapped = true;
+    }
+    else if (matchesAny('too far', 'distance', 'how far')) {
       fields['Distance Tolerance'] = truncatedValue;
-    } else if (questionTitle.includes('tell us more') && questionTitle.includes('location')) {
+      mapped = true;
+    }
+    else if (matchesAny('tell us more') && matchesAny('location')) {
       fields['Location Details'] = truncatedValue;
-    } else if (questionTitle.includes('community setup')) {
+      mapped = true;
+    }
+
+    // === COMMUNITY & ENVIRONMENT ===
+    else if (matchesAny('community setup', 'type of community', 'community type')) {
       fields['Community Setup'] = truncatedValue;
-    } else if (questionTitle.includes('community be friendly')) {
+      mapped = true;
+    }
+    else if (matchesAny('community be friendly', 'friendly for', 'suitable for')) {
       fields['Community Friendly For'] = truncatedValue;
-    } else if (questionTitle.includes('natural features')) {
+      mapped = true;
+    }
+    else if (matchesAny('natural features', 'nature', 'natural surroundings')) {
       fields['Natural Features'] = truncatedValue;
-    } else if (questionTitle.includes('terrain')) {
+      mapped = true;
+    }
+    else if (matchesAny('terrain', 'topography', 'land type')) {
       fields['Terrain Preference'] = truncatedValue;
-    } else if (questionTitle.includes('preferred views')) {
+      mapped = true;
+    }
+    else if (matchesAny('preferred views', 'view preference', 'what views')) {
       fields['Preferred Views'] = truncatedValue;
-    } else if (questionTitle.includes('outdoor amenities')) {
+      mapped = true;
+    }
+    else if (matchesAny('outdoor amenities', 'outdoor facilities', 'outdoor features')) {
       fields['Outdoor Amenities'] = truncatedValue;
-    } else if (questionTitle.includes('tell us more') && questionTitle.includes('amenities')) {
+      mapped = true;
+    }
+    else if (matchesAny('tell us more') && matchesAny('amenities')) {
       fields['Amenities Details'] = truncatedValue;
-    } else if (questionTitle.includes('unit configuration')) {
+      mapped = true;
+    }
+
+    // === HOME SPECIFICATIONS ===
+    else if (matchesAny('unit configuration', 'bedrooms', 'bhk', 'rooms')) {
       fields['Unit Configuration'] = truncatedValue;
-    } else if (questionTitle.includes('facing direction') || questionTitle.includes('vastu')) {
+      mapped = true;
+    }
+    else if (matchesAny('facing direction', 'vastu', 'which direction')) {
       fields['House Facing Direction'] = truncatedValue;
-    } else if (questionTitle.includes('furnishing level')) {
+      mapped = true;
+    }
+    else if (matchesAny('furnishing level', 'furnished', 'furnishing')) {
       fields['Furnishing Level'] = truncatedValue;
-    } else if (questionTitle.includes('interior style')) {
+      mapped = true;
+    }
+    else if (matchesAny('interior style', 'design style', 'aesthetic')) {
       fields['Interior Style'] = truncatedValue;
-    } else if (questionTitle.includes('smart home')) {
+      mapped = true;
+    }
+    else if (matchesAny('smart home', 'automation', 'smart features')) {
       fields['Smart Home Preferences'] = truncatedValue;
-    } else if (questionTitle.includes('must-have features')) {
+      mapped = true;
+    }
+    else if (matchesAny('must-have features', 'essential features', 'must have')) {
       fields['Must Have Features'] = truncatedValue;
-    } else if (questionTitle.includes('tell us more') && questionTitle.includes('home')) {
+      mapped = true;
+    }
+    else if (matchesAny('tell us more') && matchesAny('home')) {
       fields['Home Details'] = truncatedValue;
+      mapped = true;
+    }
+
+    // === REFERRAL & ADDITIONAL ===
+    else if (matchesAny('where did you hear', 'hear about us', 'how did you find', 'referral')) {
+      fields['Referral Source'] = truncatedValue;
+      mapped = true;
+    }
+    else if (matchesAny('tell us anything else', 'additional', 'anything else', 'comments')) {
+      fields['Additional Notes'] = truncatedValue;
+      mapped = true;
+    }
+
+    // Track unmapped fields
+    if (mapped) {
+      mappedCount++;
+      console.log(`✅ Mapped: "${answer.field?.title || answer.field?.ref}"`);
+    } else {
+      unmappedFields.push({
+        title: answer.field?.title,
+        ref: answer.field?.ref,
+        type: answer.type,
+        valuePreview: answerValue.substring(0, 50)
+      });
+      console.log(`❌ UNMAPPED: "${answer.field?.title || answer.field?.ref}" (ref: ${answer.field?.ref})`);
     }
   });
 
+  // === SUMMARY LOGGING ===
+  console.log('\n=== AIRTABLE MAPPING SUMMARY ===');
+  console.log(`Total answers: ${answers.length}`);
+  console.log(`Successfully mapped: ${mappedCount}`);
+  console.log(`Unmapped fields: ${unmappedFields.length}`);
+  
+  if (unmappedFields.length > 0) {
+    console.log('\n⚠️  UNMAPPED FIELDS DETAILS:');
+    unmappedFields.forEach((field, idx) => {
+      console.log(`${idx + 1}. Title: "${field.title}" | Ref: "${field.ref}" | Type: ${field.type}`);
+      console.log(`   Value preview: "${field.valuePreview}..."`);
+    });
+  }
+
+  console.log('\n📋 Fields being sent to Airtable:');
+  console.log(Object.keys(fields));
+
+  // Send to Airtable
   const record = { fields };
 
   const response = await fetch(
@@ -299,10 +470,12 @@ async function updateAirtable(formResponse, dbSubmissionId) {
 
   if (!response.ok) {
     const errorText = await response.text();
+    console.error('❌ Airtable API Error:', errorText);
     throw new Error(`Airtable error: ${response.statusText} - ${errorText}`);
   }
 
-  console.log('Updated Airtable');
+  const responseData = await response.json();
+  console.log('✅ Successfully created Airtable record:', responseData.id);
 }
 
 // Verify Typeform webhook signature
@@ -312,14 +485,13 @@ function verifyTypeformSignature(payload, signature) {
     .createHmac('sha256', process.env.TYPEFORM_WEBHOOK_SECRET)
     .update(JSON.stringify(payload))
     .digest('base64');
-  
   return `sha256=${hash}` === signature;
 }
 
 // Helper to extract answer text
 function getAnswerText(answer) {
   if (!answer) return null;
-  
+
   switch (answer.type) {
     case 'text':
     case 'email':
