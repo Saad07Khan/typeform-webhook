@@ -113,6 +113,14 @@ async function saveToSupabase(formResponse) {
 
   if (submissionError) throw submissionError;
 
+  // Build question lookup map from form definition
+  const questionMap = {};
+  if (formResponse.definition?.fields) {
+    formResponse.definition.fields.forEach(field => {
+      questionMap[field.id] = field.title;
+    });
+  }
+
   // Insert answers (if any exist)
   if (formResponse.answers && formResponse.answers.length > 0) {
     const answers = formResponse.answers
@@ -120,7 +128,7 @@ async function saveToSupabase(formResponse) {
       .map(answer => ({
         submission_id: submission.id,
         question_id: answer.field.id,
-        question_text: answer.field.ref || answer.field.title || 'Unknown',
+        question_text: questionMap[answer.field.id] || answer.field.ref || 'Unknown',
         answer_text: getAnswerText(answer),
         answer_type: answer.type,
       }));
@@ -161,17 +169,29 @@ async function updateAirtable(formResponse, dbSubmissionId) {
 
   const answers = formResponse.answers || [];
 
+  // Build question lookup map from form definition
+  const questionMap = {};
+  if (formResponse.definition?.fields) {
+    formResponse.definition.fields.forEach(field => {
+      questionMap[field.id] = field.title;
+    });
+    console.log('✅ Built question map with', Object.keys(questionMap).length, 'questions');
+  } else {
+    console.error('⚠️  WARNING: formResponse.definition.fields is missing!');
+  }
+
   // === DEBUG LOGGING ===
   console.log('=== TYPEFORM PAYLOAD DEBUG ===');
   console.log(`Total answers received: ${answers.length}`);
-  answers.forEach((answer, idx) => {
-    console.log(`Answer ${idx}:`, {
-      type: answer.type,
+  
+  // Sample first 3 answers with mapped titles
+  answers.slice(0, 3).forEach((answer, idx) => {
+    const mappedTitle = questionMap[answer.field?.id];
+    console.log(`Answer ${idx} MAPPED:`, {
       fieldId: answer.field?.id,
-      fieldTitle: answer.field?.title,
-      fieldRef: answer.field?.ref,
-      hasValue: !!getAnswerText(answer),
-      answerPreview: getAnswerText(answer)?.substring(0, 50)
+      originalRef: answer.field?.ref,
+      mappedTitle: mappedTitle || 'NOT FOUND',
+      answerValue: getAnswerText(answer)?.substring(0, 30)
     });
   });
 
@@ -193,14 +213,13 @@ async function updateAirtable(formResponse, dbSubmissionId) {
 
   // Map ALL answers to Airtable columns with improved logic
   answers.forEach((answer) => {
-    // Try both title and ref for matching
-    const questionTitle = (answer.field?.title || '').toLowerCase().trim();
+    // Get the actual question title from definition
+    const questionTitle = (questionMap[answer.field?.id] || '').toLowerCase().trim();
     const questionRef = (answer.field?.ref || '').toLowerCase().trim();
     const answerValue = getAnswerText(answer);
 
     // Skip if no answer value
     if (!answerValue || answerValue === 'N/A' || answerValue === '') {
-      console.log(`⚠️  Skipping empty answer for: ${answer.field?.title || answer.field?.ref}`);
       return;
     }
 
@@ -220,73 +239,73 @@ async function updateAirtable(formResponse, dbSubmissionId) {
     let mapped = false;
 
     // === CONTACT INFORMATION ===
-    if (matchesAny('full name', 'your name', 'name')) {
+    if (matchesAny('full name', 'your name', 'name', "what's your name")) {
       fields['Full Name'] = truncatedValue;
-      fields['Name'] = truncatedValue; // Legacy field
+      fields['Name'] = truncatedValue;
       mapped = true;
     } 
-    else if (matchesAny('email', 'e-mail', 'email address')) {
+    else if (matchesAny('email', 'e-mail', 'email address', 'your email')) {
       fields['Email Address'] = truncatedValue;
-      fields['Email'] = truncatedValue; // Legacy field
+      fields['Email'] = truncatedValue;
       mapped = true;
     } 
-    else if (matchesAny('mobile', 'phone', 'whatsapp', 'contact number')) {
+    else if (matchesAny('mobile', 'phone', 'whatsapp', 'contact number', 'phone number')) {
       fields['Mobile Number'] = truncatedValue;
       mapped = true;
     }
 
     // === DEMOGRAPHIC INFO ===
-    else if (matchesAny('age group', 'age range', 'how old')) {
+    else if (matchesAny('age group', 'age range', 'how old', 'your age')) {
       fields['Age Group'] = truncatedValue;
       mapped = true;
     }
-    else if (matchesAny('where do you currently live', 'current location', 'living in')) {
+    else if (matchesAny('where do you currently live', 'current location', 'living in', 'where do you live')) {
       fields['Current Location'] = truncatedValue;
       mapped = true;
     }
-    else if (matchesAny('current profession', 'occupation', 'what do you do')) {
+    else if (matchesAny('current profession', 'occupation', 'what do you do', 'your profession')) {
       fields['Current Profession'] = truncatedValue;
       mapped = true;
     }
-    else if (matchesAny('household income', 'annual income', 'family income')) {
+    else if (matchesAny('household income', 'annual income', 'family income', 'income range')) {
       fields['Household Income'] = truncatedValue;
       mapped = true;
     }
-    else if (matchesAny('household size', 'family size', 'how many people')) {
+    else if (matchesAny('household size', 'family size', 'how many people', 'family members')) {
       fields['Household Size'] = truncatedValue;
       mapped = true;
     }
 
     // === PURCHASE/INVESTMENT INFO ===
-    else if (matchesAny('exploring this purchase', 'how long', 'timeline')) {
+    else if (matchesAny('exploring this purchase', 'how long', 'been exploring', 'purchase duration')) {
       fields['Purchase Duration'] = truncatedValue;
       mapped = true;
     }
-    else if (matchesAny('buying journey', 'purchase stage', 'where are you')) {
+    else if (matchesAny('buying journey', 'purchase stage', 'where are you', 'journey stage')) {
       fields['Buying Journey Stage'] = truncatedValue;
       mapped = true;
     }
-    else if (matchesAny('properties have you purchased', 'bought before', 'previous purchases')) {
+    else if (matchesAny('properties have you purchased', 'bought before', 'previous purchases', 'purchased before')) {
       fields['Properties Purchased Before'] = truncatedValue;
       mapped = true;
     }
-    else if (matchesAny('prompting this property search', 'why now', 'what prompted')) {
+    else if (matchesAny('prompting this property search', 'why now', 'what prompted', 'property search')) {
       fields['Purchase Prompt'] = truncatedValue;
       mapped = true;
     }
-    else if (matchesAny('dream property', 'ideal investment', 'perfect property')) {
+    else if (matchesAny('dream property', 'ideal investment', 'perfect property', 'ideal property')) {
       fields['Dream Property Description'] = truncatedValue;
       mapped = true;
     }
-    else if (matchesAny('preferred location', 'where would you like', 'location preference')) {
+    else if (matchesAny('preferred location', 'where would you like', 'location preference', 'preferred locations')) {
       fields['Preferred Locations'] = truncatedValue;
       mapped = true;
     }
-    else if (matchesAny('main intention behind this investment', 'investment goal', 'why invest')) {
+    else if (matchesAny('main intention', 'intention behind', 'investment goal', 'why invest')) {
       fields['Investment Intention'] = truncatedValue;
       mapped = true;
     }
-    else if (matchesAny('inspires this investment', 'what inspires', 'motivation')) {
+    else if (matchesAny('inspires this investment', 'what inspires', 'motivation', 'investment inspiration')) {
       fields['Investment Inspiration'] = truncatedValue;
       mapped = true;
     }
@@ -296,7 +315,7 @@ async function updateAirtable(formResponse, dbSubmissionId) {
     }
 
     // === PROPERTY SPECIFICATIONS ===
-    else if (matchesAny('vibe are you looking', 'atmosphere', 'what vibe')) {
+    else if (matchesAny('vibe are you looking', 'atmosphere', 'what vibe', 'preferred vibe')) {
       fields['Preferred Vibe'] = truncatedValue;
       mapped = true;
     }
@@ -304,27 +323,27 @@ async function updateAirtable(formResponse, dbSubmissionId) {
       fields['Asset Type'] = truncatedValue;
       mapped = true;
     }
-    else if (matchesAny('budget range', 'price range', 'how much')) {
+    else if (matchesAny('budget range', 'price range', 'how much', 'budget')) {
       fields['Budget Range'] = truncatedValue;
       mapped = true;
     }
-    else if (matchesAny('ownership structure', 'how own', 'ownership type')) {
+    else if (matchesAny('ownership structure', 'how own', 'ownership type', 'ownership')) {
       fields['Ownership Structure'] = truncatedValue;
       mapped = true;
     }
-    else if (matchesAny('possession timeline', 'when move in', 'possession date')) {
+    else if (matchesAny('possession timeline', 'when move in', 'possession date', 'move in')) {
       fields['Possession Timeline'] = truncatedValue;
       mapped = true;
     }
-    else if (matchesAny('close the deal', 'purchase timeline', 'when buy')) {
+    else if (matchesAny('close the deal', 'purchase timeline', 'when buy', 'deal timeline')) {
       fields['Deal Closure Timeline'] = truncatedValue;
       mapped = true;
     }
-    else if (matchesAny('management model', 'property management', 'manage property')) {
+    else if (matchesAny('management model', 'property management', 'manage property', 'management')) {
       fields['Management Model'] = truncatedValue;
       mapped = true;
     }
-    else if (matchesAny('funding preference', 'payment', 'financing')) {
+    else if (matchesAny('funding preference', 'payment', 'financing', 'funding')) {
       fields['Funding Preference'] = truncatedValue;
       mapped = true;
     }
@@ -334,15 +353,15 @@ async function updateAirtable(formResponse, dbSubmissionId) {
       fields['Location Priorities'] = truncatedValue;
       mapped = true;
     }
-    else if (matchesAny('climate do you', 'weather preference', 'climate preference')) {
+    else if (matchesAny('climate do you', 'weather preference', 'climate preference', 'preferred climate')) {
       fields['Preferred Climate'] = truncatedValue;
       mapped = true;
     }
-    else if (matchesAny('type of area', 'urban', 'rural', 'area preference')) {
+    else if (matchesAny('type of area', 'urban', 'rural', 'area preference', 'area type')) {
       fields['Area Type Preference'] = truncatedValue;
       mapped = true;
     }
-    else if (matchesAny('too far', 'distance', 'how far')) {
+    else if (matchesAny('too far', 'distance', 'how far', 'distance tolerance')) {
       fields['Distance Tolerance'] = truncatedValue;
       mapped = true;
     }
@@ -356,7 +375,7 @@ async function updateAirtable(formResponse, dbSubmissionId) {
       fields['Community Setup'] = truncatedValue;
       mapped = true;
     }
-    else if (matchesAny('community be friendly', 'friendly for', 'suitable for')) {
+    else if (matchesAny('community be friendly', 'friendly for', 'suitable for', 'community friendly')) {
       fields['Community Friendly For'] = truncatedValue;
       mapped = true;
     }
@@ -382,11 +401,11 @@ async function updateAirtable(formResponse, dbSubmissionId) {
     }
 
     // === HOME SPECIFICATIONS ===
-    else if (matchesAny('unit configuration', 'bedrooms', 'bhk', 'rooms')) {
+    else if (matchesAny('unit configuration', 'bedrooms', 'bhk', 'rooms', 'configuration')) {
       fields['Unit Configuration'] = truncatedValue;
       mapped = true;
     }
-    else if (matchesAny('facing direction', 'vastu', 'which direction')) {
+    else if (matchesAny('facing direction', 'vastu', 'which direction', 'house facing')) {
       fields['House Facing Direction'] = truncatedValue;
       mapped = true;
     }
@@ -424,15 +443,16 @@ async function updateAirtable(formResponse, dbSubmissionId) {
     // Track unmapped fields
     if (mapped) {
       mappedCount++;
-      console.log(`✅ Mapped: "${answer.field?.title || answer.field?.ref}"`);
+      console.log(`✅ Mapped: "${questionMap[answer.field?.id] || answer.field?.ref}"`);
     } else {
       unmappedFields.push({
-        title: answer.field?.title,
+        fieldId: answer.field?.id,
+        title: questionMap[answer.field?.id],
         ref: answer.field?.ref,
         type: answer.type,
         valuePreview: answerValue.substring(0, 50)
       });
-      console.log(`❌ UNMAPPED: "${answer.field?.title || answer.field?.ref}" (ref: ${answer.field?.ref})`);
+      console.log(`❌ UNMAPPED: "${questionMap[answer.field?.id] || answer.field?.ref}"`);
     }
   });
 
@@ -445,13 +465,16 @@ async function updateAirtable(formResponse, dbSubmissionId) {
   if (unmappedFields.length > 0) {
     console.log('\n⚠️  UNMAPPED FIELDS DETAILS:');
     unmappedFields.forEach((field, idx) => {
-      console.log(`${idx + 1}. Title: "${field.title}" | Ref: "${field.ref}" | Type: ${field.type}`);
-      console.log(`   Value preview: "${field.valuePreview}..."`);
+      console.log(`${idx + 1}. ID: ${field.fieldId}`);
+      console.log(`   Title: "${field.title}"`);
+      console.log(`   Ref: "${field.ref}"`);
+      console.log(`   Type: ${field.type}`);
+      console.log(`   Value: "${field.valuePreview}..."`);
     });
   }
 
-  console.log('\n📋 Fields being sent to Airtable:');
-  console.log(Object.keys(fields));
+  console.log('\n📋 Fields being sent to Airtable:', Object.keys(fields).length);
+  console.log('Field names:', Object.keys(fields));
 
   // Send to Airtable
   const record = { fields };
@@ -509,6 +532,9 @@ function getAnswerText(answer) {
       return answer.date;
     case 'file_url':
       return answer.file_url;
+    case 'phone_number':
+      // Handle phone_number type specially
+      return answer.phone_number || JSON.stringify(answer);
     default:
       return JSON.stringify(answer);
   }
