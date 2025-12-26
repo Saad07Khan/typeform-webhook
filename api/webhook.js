@@ -121,7 +121,7 @@ async function saveToSupabase(formResponse) {
       .map(answer => ({
         submission_id: submission.id,
         question_id: answer.field.id,
-        question_text: answer.field.ref || answer.field.title || 'Unknown',
+        question_text: answer.field.title || answer.field.ref || 'Unknown',
         answer_text: getAnswerText(answer),
         answer_type: answer.type,
       }));
